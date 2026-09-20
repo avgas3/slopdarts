@@ -35,5 +35,6 @@ jobs:
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/slopdarts:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/slopdarts:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/slopdarts:${{ github.ref_name }}
           cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/slopdarts:cache
           cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/slopdarts:cache,mode=max

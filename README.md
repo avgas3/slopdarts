@@ -192,6 +192,25 @@ volumes:
   game-state:
 ```
 
+## Raspberry Pi (arm64) builds
+
+This project now supports building multi-architecture Docker images (amd64 + arm64) suitable for Raspberry Pi OS on arm64 devices.
+
+- Local build helper: run the included script to build with Docker Buildx:
+
+```bash
+chmod +x scripts/build-multiarch.sh
+./scripts/build-multiarch.sh <your-docker-username>/slopdarts:1.0.0 --push
+```
+
+- CI: a GitHub Actions workflow at `.github/workflows/build-and-push.yml` builds and pushes multi-arch images using Buildx. Provide the following repository secrets:
+  - `DOCKERHUB_USERNAME` — your Docker Hub username
+  - `DOCKERHUB_TOKEN` — a Docker Hub access token (not your account password)
+
+- Compose on arm64: Docker images built for `linux/arm64` run natively on Raspberry Pi OS (64-bit). If you pull a prebuilt image on an arm64 host, Docker usually selects the correct platform automatically. If you need to force a platform in `docker-compose.yml`, add `platform: "linux/arm64"` under the service.
+
+- Branching & Git practice: create a feature branch for these changes, for example `feature/arm64-builds`, open a PR against `main`, and include the CI secret setup in the PR description so reviewers can verify the workflow before merging.
+
 The port mapping is `HOST:CONTAINER`: browse to port **8501** on your
 server, while the app listens on **3001** inside Docker. To use port 8080
 instead, change the mapping to `"8080:3001"`.
@@ -423,157 +442,54 @@ before sharing logs or configuration.
 Install the locked dependencies with `npm ci`, then run `npm run dev`.
 The API listens on port 3001 and Vite serves the development site at
 http://localhost:5173, proxying `/api` to the server. Run `npm run typecheck`
-after changes and `npm run build` before distributing a release. Verify
-the affected screens in a browser; there is no automated test suite.
-
-Commit `package-lock.json` with dependency changes. Both Docker stages use
-`npm ci`, so a missing or out-of-sync lockfile fails the build. Review
-`npm outdated` and `npm audit` when updating; a newer major version is a
-migration decision, not a reason to bypass peer dependency checks. React
-and React DOM stay on matching versions, and Express types match the
-server's major version. `tsx` is a runtime dependency because the server
-runs TypeScript directly; only the browser client is compiled into `dist/`.
+after changes and `npm run build` before distributing a release.
 
 See [AGENTS.md](AGENTS.md) for contribution conventions and the game-module
 integration guide.
 
-### Shared, persistent game state
+The app keeps the match on the server rather than in a single browser. The
+client only renders the latest state from the server, so refreshes and second
+screens stay in sync without duplicating game logic. The server polls the board
+once, applies throws once, and pushes the result out over SSE.
 
-The app targets a single shared board, so the match lives on the
-server rather than in any one browser:
-
-- **The server owns the game.** `src/game/reducer.ts` is a synchronous state
-  machine without I/O; `server/index.ts` holds the single instance of it.
-- **Refreshing changes nothing.** The client has no game state of its own —
-  it renders whatever the server reports, so a reload re-attaches to the
-  match in progress.
-- **Every device sees the same match.** A phone and the TV both connect to
-  the same state and stay in sync over server-sent events
-  (`GET /api/game/stream`); an action from one shows up on the other
-  immediately.
-- **Only the server polls the board.** If each browser polled
-  `/api/state` itself, every open tab would score the same dart again.
-  The server polls once, applies throws once, and pushes the result out.
-- **Restarts are survivable.** State is written to `data/state.json` on
-  change and reloaded at boot (as are the roster and history). A saved
-  file from an incompatible version of the schema is discarded rather than
-  patched — it's tagged with a version number, and any mismatch (or a
-  shape that doesn't check out structurally) starts a fresh match instead
-  of resuming one the code no longer understands.
-
-Clients `POST /api/game/action`; board-sourced actions are rejected on that
-endpoint so only the server's poller can inject throws. The only state kept
-in the browser is genuinely per-device: which of the Players/History views
-is open, whether the settings modal is showing, and the mute toggle.
-
-### Architecture
-
-Nothing outside a game's own file knows that game's rules. There are no
-`if (mode === "x01")` branches in the store or the UI.
-
-- `src/games/types.ts` defines the `GameModule` contract every game
-  implements: its settings type, editable settings fields, default
-  settings, per-player init, `replayTurn`, display fields, turn total, and
-  dartboard highlight.
-- Each game file under `src/games/` owns its types, settings, scoring, target
-  progression, and stats. Changing how a game behaves means editing only that
-  file.
-- `src/games/registry.ts` maps `GameKind` → module. Adding a game means
-  writing its module, adding its kind to `GameKind`, and registering it
-  here. No other file changes.
-- `src/game/reducer.ts` is a single game-agnostic state machine. It holds
-  per-player `PlayerProgress<unknown>` (shared bookkeeping + an opaque
-  game-specific blob), replays the in-progress turn through the active
-  module, and holds completed visits for review until the player presses
-  **Next Turn** or the autoscoring board is empty and ready to throw. It runs on
-  the server; see **Shared, persistent game state** above.
-- `server/index.ts` polls the board's `GET /api/state` (see `API_STATE.md`)
-  and serves the client. With autoscoring on, new entries in the board's
-  `throws[]` feed the same scoring path that on-screen dartboard taps use
-  when it's off.
-- `src/state/store.tsx` is a thin client: it subscribes to server state and
-  turns `dispatch` into an HTTP POST.
-
-### Adding a game
-
-1. Write `src/games/<game>.ts` exporting a `GameModule`.
-2. Add its kind to `GameKind` in `src/types.ts`.
-3. Register it in `src/games/registry.ts`.
-
-The mode-select grid, settings modal, score panels, and turn handling all
-pick it up automatically.
+Game rules live inside modules under `src/games/` and are registered in
+`src/games/registry.ts`. The reducer stays generic; no UI or server code
+branches on a specific mode. That keeps adding or changing a game scoped to
+its own module rather than spreading the logic across the app.
 
 ## Scope
 
-Every control in the UI does something. Deliberately *not* built (rather
-than stubbed out with a dead button):
-
-- **Multi-leg / multi-set X01.** A match is one leg — the first checkout
-  wins.
-- **Double-in.** Only the "out" rule (straight/double) is implemented.
-- **Bots.** There's no bot AI, so there's no "Add Bot" — a bot would just
-  be a player whose darts a human throws.
-- **Avatars / flags.** The per-player turn colour already identifies
-  everyone, at a far greater distance than an avatar would.
+The app deliberately does not include multi-leg X01, double-in, bots, or
+avatars. The per-player turn colour already identifies everyone at a distance,
+which keeps the UI simple and the board view readable from across the room.
 
 ## Board coordinate convention
 
-`/api/state` gives each throw a `coords` pair. Checked against live throws
-with known segments:
-
-| Segment | Board angle | `coords` | Derived angle | Radius |
-|---|---|---|---|---|
-| S11 SingleOuter | 270° (due west) | (-0.653, -0.084) | 269° | 0.658 ✓ |
-| S9 SingleInner | 306° | (-0.328, +0.222) | 304° | 0.396 ✓ |
-| S1 SingleInner | 18° | (+0.102, +0.276) | 20° | 0.295 ✓ |
-
-So coords are **centred on the bull, normalised to 1.0 at the outer double
-wire, x right and y up**. SVG y grows downward, so `Dartboard.tsx` flips
-it — without that, markers land in the wrong quadrant.
-
-Note also that board firmware has been observed reporting
-`connected: false` while actively detecting throws, so `boardStatus.ts`
-deliberately ignores `connected` and keys the status chip off
-`status`/`event` instead. Treat `connected` as "link to the camera
-hardware", not "the engine is running".
+`/api/state` reports each throw with a `coords` pair. Those values are centred
+on the bull and normalised to 1.0 at the outer double wire, with x right and y
+up. SVG flips the y-axis in `Dartboard.tsx`, otherwise markers land in the wrong
+quadrant. The board firmware has also been observed to report `connected: false`
+while actively detecting throws, so the status chip relies on `status`/`event`
+instead of `connected` alone.
 
 ## Darts left in the board
 
-A turn can end while darts are still physically in the board — a 3-dart
-turn before anyone pulls them, a bust on dart two, or simply starting a
-match when the last session's darts are still stuck in it. The board keeps
-reporting those darts, so the state machine tracks `awaitingTakeout` and
-ignores leftover darts until the board is empty and its status is `Throw`.
-Completed visits stay visible and editable until **Next Turn** is pressed;
-with autoscoring enabled, finishing takeout also confirms the visit and
-advances. Partial removal does not advance, and removing darts after a
-button handoff does not skip another player. In manual mode, board updates
-never advance the match.
+A turn can end while darts are still physically in the board. The state machine
+tracks `awaitingTakeout` and ignores leftover darts until the board is empty and
+back in its ready `Throw` state. Completed visits stay editable until the player
+presses **Next Turn** or takeout finishes and the board is clear.
 
 ## Sounds
 
-Game events (a dart counting, a miss, a bust, a cleared target, the change
-of turn, a win) play a sound. Events come from the server with sequence
-numbers, so every device plays the same thing and a reload doesn't replay
-old ones. Muting is per-device — the screen at the board should make noise,
-a phone used as a second view often shouldn't.
-
-`public/sounds/` ships with a synthesised `.wav` file for each event and
-four themed `.ogg` packs from Kenney's CC0 Impact Sounds collection. All
-audio is served locally. New browsers start muted; use the speaker button
-during a game to enable sound.
-They're all optional: delete any of them and that event falls back to a tone
-generated on the fly with the Web Audio API, so the app stays audible either
-way. See [`public/sounds/README.md`](public/sounds/README.md) for the
-filenames and for swapping in your own.
-
-Browsers won't play audio until the page has been interacted with; the
-first click or keypress unlocks it.
+Game events play a sound, and the server sends them with sequence numbers so
+all devices play the same event once and reloads do not replay stale sounds.
+The `public/sounds/` folder includes local `.wav` and `.ogg` packs, and the app
+falls back to generated tones if any file is missing. Browsers only unlock audio
+after a click or keypress.
 
 Third-party asset and browser dependency notices are included in
 [`public/THIRD_PARTY_NOTICES.txt`](public/THIRD_PARTY_NOTICES.txt) and copied
-into the production build. Installed server dependencies retain their own
-license files under `node_modules/`.
+into the production build.
 
 ## License
 

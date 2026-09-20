@@ -3,9 +3,8 @@ name: Build and Push multi-arch Docker images
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch: {}
-  push:
     tags: ["v*", "*.*.*"]
+  workflow_dispatch: {}
 
 jobs:
   build-and-push:

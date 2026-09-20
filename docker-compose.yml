@@ -1,0 +1,16 @@
+services:
+  slopdarts:
+    build: .
+    ports:
+      - "8501:3001"
+    environment:
+      # Base URL of the Autodarts board manager. The server is the only
+      # thing that talks to it.
+      BOARD_URL: ${BOARD_URL:-}
+    volumes:
+      # Keeps the match, roster, history, and board address across restarts.
+      - game-state:/app/data
+    restart: unless-stopped
+
+volumes:
+  game-state:
